@@ -3,12 +3,14 @@ const cors = require("cors");
 require("dotenv").config();
 
 const app = express();
-const PORT = 5000;
 
 app.use(cors());
 app.use(express.json());
 
+// -----------------------------
 // Gemini AI
+// -----------------------------
+
 let GoogleGenAI;
 
 async function getGeminiAI() {
@@ -22,21 +24,26 @@ async function getGeminiAI() {
   });
 }
 
+// -----------------------------
 // Wait helper
+// -----------------------------
+
 const wait = (ms) => {
   return new Promise((resolve) => setTimeout(resolve, ms));
 };
 
-// Generate AI response with retry + fallback
+// -----------------------------
+// Generate Trip with Gemini
+// -----------------------------
+
 async function generateTripWithAI(prompt) {
   const ai = await getGeminiAI();
 
-  // Try the primary model first
   const models = [
-  "gemini-3.5-flash-lite",
-  "gemini-3.6-flash",
-  "gemini-3.5-flash",
-];
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+  ];
 
   for (const model of models) {
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -59,7 +66,6 @@ async function generateTripWithAI(prompt) {
           error.message
         );
 
-        // Only retry temporary server errors
         if (
           error.message.includes("503") ||
           error.message.includes("UNAVAILABLE")
@@ -83,18 +89,86 @@ async function generateTripWithAI(prompt) {
   }
 
   throw new Error(
-    "All Gemini models are temporarily unavailable. Please try again later."
+    "All Gemini models are temporarily unavailable."
   );
 }
 
-// Home route
+// -----------------------------
+// Unsplash Image Search
+// -----------------------------
+
+async function searchPlaceImage(place, destination) {
+  const queries = [
+    `${place}, ${destination}`,
+    `${place} ${destination}`,
+    place,
+    `${destination} travel`,
+  ];
+
+  for (const query of queries) {
+    try {
+      console.log(`Searching Unsplash for: ${query}`);
+
+      const response = await fetch(
+        `https://api.unsplash.com/search/photos?query=${encodeURIComponent(
+          query
+        )}&per_page=1&orientation=landscape`,
+        {
+          headers: {
+            Authorization: `Client-ID ${process.env.UNSPLASH_ACCESS_KEY}`,
+            "Accept-Version": "v1",
+          },
+        }
+      );
+
+      if (!response.ok) {
+        console.log(
+          `Unsplash request failed: ${response.status}`
+        );
+        continue;
+      }
+
+      const data = await response.json();
+
+      if (data.results && data.results.length > 0) {
+        const photo = data.results[0];
+
+        console.log(`Image found for: ${query} ✅`);
+
+        return {
+          url: photo.urls.regular,
+          photographer: photo.user.name,
+          photographerUrl: photo.user.links.html,
+          unsplashUrl: photo.links.html,
+        };
+      }
+    } catch (error) {
+      console.error(
+        `Image search error for ${query}:`,
+        error.message
+      );
+    }
+  }
+
+  console.log(`No image found for ${place}`);
+
+  return null;
+}
+
+// -----------------------------
+// Home Route
+// -----------------------------
+
 app.get("/", (req, res) => {
   res.json({
     message: "TripMate Backend is running successfully 🚀",
   });
 });
 
-// Trip route
+// -----------------------------
+// Trip Route
+// -----------------------------
+
 app.post("/api/trip", async (req, res) => {
   try {
     const {
@@ -105,14 +179,25 @@ app.post("/api/trip", async (req, res) => {
       interests,
     } = req.body;
 
-    console.log("Trip details received:");
-    console.log({
+    console.log("Trip details received:", {
       destination,
       days,
       budget,
       travelers,
       interests,
     });
+
+    if (
+      !destination ||
+      !days ||
+      !budget ||
+      !travelers ||
+      !interests
+    ) {
+      return res.status(400).json({
+        message: "Please provide all trip details.",
+      });
+    }
 
     const prompt = `
 You are TripMate, an AI travel planner.
@@ -152,9 +237,7 @@ Day X
 
 Make the recommendations practical for the selected budget.
 
-Do not give generic suggestions such as:
-"Visit a popular attraction"
-"Explore the local area"
+Do not give generic suggestions.
 
 Always give specific place names whenever possible.
 
@@ -162,63 +245,72 @@ Return only the itinerary.
 `;
 
     const itinerary = await generateTripWithAI(prompt);
+
     const itineraryDays = itinerary
-  .split(/(?=Day\s+\d+)/i)
-  .map((day) => day.trim())
-  .filter(Boolean);
-
-const daysWithImages = [];
-
-for (const day of itineraryDays) {
-  const placesMatch = day.match(
-    /📍\s*Places to Visit:\s*([\s\S]*?)(?=\n(?:🍜|🌅|☀️|🌙|💡)|$)/i
-  );
-
-  let places = [];
-
-  if (placesMatch) {
-    places = placesMatch[1]
-      .split("\n")
-      .map((place) =>
-        place
-          .replace(/^[-•*]\s*/, "")
-          .trim()
-      )
+      .split(/(?=Day\s+\d+)/i)
+      .map((day) => day.trim())
       .filter(Boolean);
-  }
 
-  const placesWithImages = [];
+    const daysWithImages = [];
 
-  for (const place of places) {
-    const image = await searchPlaceImage(place);
+    for (const day of itineraryDays) {
+      const placesMatch = day.match(
+        /📍\s*Places to Visit:\s*([\s\S]*?)(?=\n(?:🍜|🌅|☀️|🌙|💡)|$)/i
+      );
 
-    placesWithImages.push({
-      name: place,
-      image,
-    });
-  }
+      let places = [];
 
-  daysWithImages.push({
-    content: day,
-    places: placesWithImages,
-  });
-}
+      if (placesMatch) {
+        places = placesMatch[1]
+          .split("\n")
+          .map((place) =>
+            place
+              .replace(/^[-•*]\s*/, "")
+              .trim()
+          )
+          .filter(Boolean);
+      }
+
+      const placesWithImages = [];
+
+      for (const place of places) {
+        const image = await searchPlaceImage(
+          place,
+          destination
+        );
+
+        placesWithImages.push({
+          name: place,
+          image,
+        });
+      }
+
+      daysWithImages.push({
+        content: day,
+        places: placesWithImages,
+      });
+    }
 
     res.json({
-  message: "AI trip generated successfully!",
-  trip: {
-    destination,
-    days,
-    budget,
-    travelers,
-    interests,
-  },
-  itinerary,
-  daysData: daysWithImages,
-});
-  } catch (error) {
-    console.error("Final Gemini error:", error);
+      message: "AI trip generated successfully!",
 
+      trip: {
+        destination,
+        days,
+        budget,
+        travelers,
+        interests,
+      },
+
+      itinerary,
+
+      daysData: daysWithImages,
+    });
+  } catch (error) {
+    console.error(
+      "Trip generation error:",
+      error
+    );
 
     res.status(500).json({
       message: "Failed to generate AI trip",
@@ -227,52 +319,8 @@ for (const day of itineraryDays) {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(
-    `TripMate server running on http://localhost:${PORT}`
-  );
-});
+// -----------------------------
+// Export Express App
+// -----------------------------
 
-async function searchPlaceImage(place) {
-  try {
-    const response = await fetch(
-      `https://api.unsplash.com/search/photos?query=${encodeURIComponent(
-        place
-      )}&per_page=1&orientation=landscape`,
-      {
-        headers: {
-          Authorization: `Client-ID ${process.env.UNSPLASH_ACCESS_KEY}`,
-          "Accept-Version": "v1",
-        },
-      }
-    );
-
-    if (!response.ok) {
-      throw new Error(
-        `Unsplash error: ${response.status}`
-      );
-    }
-
-    const data = await response.json();
-
-    if (!data.results || data.results.length === 0) {
-      return null;
-    }
-
-    const photo = data.results[0];
-
-    return {
-      url: photo.urls.regular,
-      photographer: photo.user.name,
-      photographerUrl: photo.user.links.html,
-      unsplashUrl: photo.links.html,
-    };
-  } catch (error) {
-    console.error(
-      `Image search failed for ${place}:`,
-      error.message
-    );
-
-    return null;
-  }
-}
+module.exports = app;
