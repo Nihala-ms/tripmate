@@ -1,4 +1,4 @@
-const API_URL = "https://tripmate-server-9kffqz2xj-nihala-ms-projects.vercel.app/api";
+const API_URL = "https://tripmate-server-7ipity0m7-nihala-ms-projects.vercel.app/api";
 
 export const sendTripDetails = async (tripData) => {
   try {
